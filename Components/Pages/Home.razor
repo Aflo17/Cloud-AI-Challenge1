@@ -1,0 +1,144 @@
+﻿@page "/"
+@using Azure;
+@using Azure.AI.Vision.Common;
+@using Azure.AI.Vision.ImageAnalysis;
+@using System;
+@using System.IO;
+@using System.Threading.Tasks;
+@using Azure.AI.OpenAI;
+@using System.Net.Http;
+@using System.Text;
+@using System.Text.Json;
+@using System.Net.Http;
+@using System.Net.Http.Headers;
+@rendermode InteractiveServer
+<PageTitle>Home</PageTitle>
+
+<h1>Computer Vision</h1>
+
+<p> Insert URL or type prompt: </p>
+
+<textarea @bind="urlOrPrompt" rows="1" cols="50"
+    placeholder="Enter url to analyze or prompt text to generate image"></textarea>
+
+<button @onclick="GenerateImage">Generate</button>
+<button @onclick="AnalyzeImage">Analyze</button>
+<img src="@ImageUrl" alt="Image to analyze" width="700" height="700" />
+
+<p>@CaptionFromAnalysis</p>
+
+@code {
+    string urlOrPrompt = "";
+    string ImageUrl = "https://placehold.it./300x300";
+    string CaptionFromAnalysis = "";
+    async Task GenerateImage()
+    {
+        try
+        {
+            string openAIKey = Environment.GetEnvironmentVariable("OPENAI_KEY");
+            using HttpClient client = new HttpClient();
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", openAIKey);
+            client.Timeout = TimeSpan.FromSeconds(15);
+
+            var requestData = new
+            {
+                model = "dall-e-3",
+                prompt = urlOrPrompt,
+                n = 1,
+                size = "1024x1024",
+                response_format = "url" // Change to "b64_json" if needed
+            };
+
+            string jsonString = JsonSerializer.Serialize(requestData);
+            HttpContent content = new StringContent(jsonString, Encoding.UTF8, "application/json");
+
+            var request = new HttpRequestMessage(HttpMethod.Post, "https://api.openai.com/v1/images/generations")
+                {
+                    Content = content
+                };
+
+            HttpResponseMessage response = await client.SendAsync(request);
+
+            string responseBody = await response.Content.ReadAsStringAsync();
+
+            if (response.IsSuccessStatusCode)
+            {
+                var responseObj = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(responseBody);
+                if (responseObj != null)
+                {
+                    if (responseObj.ContainsKey("data"))
+                    {
+                        var dataArray = responseObj["data"].EnumerateArray();
+                        if (dataArray.Any())
+                        {
+                            var firstImage = dataArray.First();
+                            if (firstImage.TryGetProperty("url", out var imageUrl))
+                            {
+                                ImageUrl = imageUrl.GetString();
+                                Console.WriteLine("Response received successfully.");
+                            }
+                            // For "b64_json" format, additional handling will be needed here
+                        }
+                    }
+                }
+            }
+            else
+            {
+                Console.WriteLine($"Error: {response.StatusCode}");
+                Console.WriteLine($"Error Body: {responseBody}");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Exception: {ex.Message}");
+        }
+    }
+
+    void AnalyzeImage()
+    {
+        var serviceOptions = new VisionServiceOptions(
+        Environment.GetEnvironmentVariable("VISION_ENDPOINT"),
+        new AzureKeyCredential(Environment.GetEnvironmentVariable("VISION_KEY")));
+
+        using var imageSource = VisionSource.FromUrl(
+        new Uri(urlOrPrompt));
+        ImageUrl = urlOrPrompt;
+
+        var analysisOptions = new ImageAnalysisOptions()
+            {
+                Features =
+            ImageAnalysisFeature.CropSuggestions
+            | ImageAnalysisFeature.Caption
+
+            };
+
+        using var analyzer = new ImageAnalyzer(serviceOptions, imageSource, analysisOptions);
+
+        var result = analyzer.Analyze();
+
+        if (result.Reason == ImageAnalysisResultReason.Analyzed)
+        {
+            Console.WriteLine($" Image height = {result.ImageHeight}");
+            Console.WriteLine($" Image width = {result.ImageWidth}");
+            Console.WriteLine($" Model version = {result.ModelVersion}");
+
+            if (result.Caption != null)
+            {
+                Console.WriteLine(" Caption:");
+                Console.WriteLine($" \"{result.Caption.Content}\", Confidence {result.Caption.Confidence:0.0000}");
+                CaptionFromAnalysis = result.Caption.Content;
+            }
+
+
+        }
+        else
+        {
+            var errorDetails = ImageAnalysisErrorDetails.FromResult(result);
+            Console.WriteLine(" Analysis failed.");
+            Console.WriteLine($" Error reason : {errorDetails.Reason}");
+            Console.WriteLine($" Error code : {errorDetails.ErrorCode}");
+            Console.WriteLine($" Error message: {errorDetails.Message}");
+        }
+        // TODO: Add logic to analyze image
+    }
+}

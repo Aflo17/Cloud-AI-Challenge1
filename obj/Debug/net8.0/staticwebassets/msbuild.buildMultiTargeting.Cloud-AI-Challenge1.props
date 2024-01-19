@@ -1,0 +1,3 @@
+﻿<Project>
+  <Import Project="../build/Cloud-AI-Challenge1.props" />
+</Project>
